@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 import logging
 
@@ -71,6 +73,103 @@ class InnerProductExperiment(BaseExperiment):
 
         approx = np.dot(a_low, b_low)
         exact = self.compute_reference_inner_product(a, b, dtype)
+        abs_error = abs(approx - exact)
+        return abs_error
+
+
+class InnerProductExperimentMixed(InnerProductExperiment):
+    """
+    Mixed precision inner product experiment without FMA.
+    - Operands stored in low precision (float16 or float32)
+    - Accumulation performed in high precision (float64)
+    - Separate multiply and add (two rounding steps)
+    """
+
+    def run_single_size(self, size, dtype):
+        """
+        Compute inner product using mixed precision accumulation (no FMA).
+
+        Parameters
+        ----------
+        size : int
+            Length of input vectors.
+        dtype : np.dtype
+            Precision for input operands (low precision).
+
+        Returns
+        -------
+        float
+            Absolute error between mixed-precision result and high-precision result.
+        """
+        # 1. 生成输入向量（高精度）
+        a = np.random.uniform(*self.value_range, size=size)
+        b = np.random.uniform(*self.value_range, size=size)
+
+        # 2. 转为低精度
+        a_low = a.astype(dtype)
+        b_low = b.astype(dtype)
+
+        # 3. 计算内积：低精度乘，高精度加
+        acc = 0.0  # float64 accumulator
+        for i in range(size):
+            prod = float(a_low[i]) * float(b_low[i])  # 乘法先量化输入，再转float64
+            acc += prod  # 在高精度中累加
+
+        approx = acc
+
+        # 4. 用高精度算参考值
+        exact = self.compute_reference_inner_product(a, b, dtype)
+
+        # 5. 返回绝对误差
+        abs_error = abs(approx - exact)
+        return abs_error
+
+
+class InnerProductExperimentFMA(InnerProductExperiment):
+    """
+    Mixed-precision inner product experiment using explicit FMA.
+    - Operands stored in low precision (float16 or float32)
+    - Accumulation performed in high precision (float64)
+    - Fused multiply-add ensures one rounding per iteration
+    """
+
+    def run_single_size(self, size, dtype):
+        """
+        Compute inner product using mixed precision and explicit FMA.
+
+        Parameters
+        ----------
+        size : int
+            Length of input vectors.
+        dtype : np.dtype
+            Precision for input operands (low precision).
+
+        Returns
+        -------
+        float
+            Absolute error between FMA result and high-precision result.
+        """
+        # 1. Generate input vectors
+        a = np.random.uniform(*self.value_range, size=size)
+        b = np.random.uniform(*self.value_range, size=size)
+
+        # 2. Convert to low precision
+        a_low = a.astype(dtype)
+        b_low = b.astype(dtype)
+
+        # 3. Compute inner product explicitly using FMA (accumulation in float64)
+        acc = 0.0  # float64 accumulator
+        for i in range(size):
+            # Ensure each operand is cast to Python float (double precision)
+            # because math.fma expects scalars, not numpy dtypes.
+            acc = math.fma(float(a_low[i]), float(b_low[i]), acc)
+
+        approx = acc
+
+        # 4. Reference computation in high precision
+        exact = self.compute_reference_inner_product(a, b, dtype)
+
+        # 5. Error metric (absolute error)
         abs_error = abs(approx - exact)
         return abs_error
 
