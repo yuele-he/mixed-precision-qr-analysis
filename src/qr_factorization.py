@@ -1,5 +1,6 @@
+# src/qr_decomp.py
 import numpy as np
-from scipy.constants import precision
+from core.plotter import plot_qr_metrics_bar, plot_qr_metrics_line
 
 
 def householder_vector(x):
@@ -16,9 +17,7 @@ def householder_vector(x):
     """
     x = x.reshape(-1, 1)  # ensure column vector
     sigma = np.dot(x[1:].T, x[1:])[0, 0]
-
     v = x.copy()
-
     if sigma == 0 and x[0] >= 0:
         beta = 0.0
     elif sigma == 0 and x[0] < 0:
@@ -33,7 +32,6 @@ def householder_vector(x):
         v = v / v[0]  # normalize so that v[0] == 1
 
     return v, beta
-
 
 def householder_qr(A):
     """
@@ -65,7 +63,6 @@ def householder_qr(A):
 
     R = A
     return Q, R
-
 
 def qr_wy(A):
     """
@@ -137,17 +134,112 @@ def block_qr(A, block_size=64):
     R = A
     return Q_total, R
 
+# -------------------- #
+# QRExperiment 类封装 #
+# -------------------- #
+
+class QRExperiment:
+    """
+    Run QR decomposition experiments with multiple methods,
+    supporting single test or parameter sweep.
+    """
+
+    def __init__(self, dtypes=[np.float64], sizes=[(200, 100)], block_size=64):
+        """
+        Parameters
+        ----------
+        dtypes : list of np.dtype
+            Data types to test (e.g. [np.float32, np.float64])
+        sizes : list of tuple
+            Matrix sizes to test (list of (m, n))
+        block_size : int
+            Block size for block_qr
+        """
+        self.dtypes = dtypes
+        self.sizes = sizes
+        self.block_size = block_size
+        self.methods = {
+            "householder": householder_qr,
+            "wy": qr_wy,
+            "block": block_qr
+        }
+
+    def run_single(self, m=200, n=100, dtype=np.float64):
+        """
+        Run QR decomposition once on a random matrix.
+
+        Returns
+        -------
+        dict : { method: {"residual": float, "orthogonality": float} }
+        """
+        A = np.random.randn(m, n).astype(dtype)
+        b = np.random.uniform(1, 2, size=(m, 1)).astype(dtype)
+
+        results = {}
+        for name, fn in self.methods.items():
+            Q, R = fn(A)
+            residual = np.linalg.norm(A - Q @ R, 'fro') / np.linalg.norm(A, 'fro')
+            orthogonality = np.linalg.norm(Q.T @ Q - np.eye(Q.shape[1])) / np.linalg.norm(Q)
+            rhs = Q.T @ b
+            x = np.linalg.lstsq(R, rhs, rcond=None)[0]
+            ls = np.linalg.norm(R @ x - Q.T @ b) / np.linalg.norm(b)
+            results[name] = {
+                "residual": residual,
+                "orthogonality": orthogonality,
+                "least_squares": ls
+            }
+        return results
+
+    def run_sweep(self):
+        """
+        Run QR decomposition for all sizes and dtypes.
+
+        Returns
+        -------
+        dict :
+            {
+                "float32": {
+                    "householder": {"sizes": [...], "residuals": [...], "orthogonality": [...]},
+                    "wy": {...},
+                    "block": {...}
+                },
+                "float64": {...}
+            }
+        """
+        sweep_results = {}
+
+        for dtype in self.dtypes:
+            dtype_name = np.dtype(dtype).name
+
+            sweep_results[dtype_name] = {
+                name: {"sizes": [], "residuals": [], "orthogonality": []}
+                for name in self.methods
+            }
+
+            for (m, n) in self.sizes:
+                A = np.random.randn(m, n).astype(dtype)
+
+                for name, fn in self.methods.items():
+                    Q, R = fn(A)
+
+                    residual = np.linalg.norm(Q @ R - A, ord="fro") / np.linalg.norm(A, ord="fro")
+                    orthogonality = (
+                            np.linalg.norm(Q.T @ Q - np.eye(Q.shape[1]), ord="fro")
+                            / np.linalg.norm(Q, ord="fro")
+                    )
+
+                    sweep_results[dtype_name][name]["sizes"].append(m)
+                    sweep_results[dtype_name][name]["residuals"].append(float(residual))
+                    sweep_results[dtype_name][name]["orthogonality"].append(float(orthogonality))
+
+        return sweep_results
+
 if __name__ == "__main__":
-    A = np.random.randn(200, 100).astype(np.float64)
+    exp = QRExperiment()
+    single_res = exp.run_single(m=200, n=100, dtype=np.float64)
+    plot_qr_metrics_bar(single_res, title="Single QR Decomposition Test")
 
-    print("Element-wise Householder QR")
-    Q1, R1 = householder_qr(A)
-    print("‖QR - A‖ =", np.linalg.norm(Q1 @ R1 - A))
-
-    print("WY-based QR")
-    Q2, R2 = qr_wy(A)
-    print("‖QR - A‖ =", np.linalg.norm(Q2 @ R2 - A))
-
-    print("Block QR")
-    Q3, R3 = block_qr(A, block_size=32)
-    print("‖QR - A‖ =", np.linalg.norm(Q3 @ R3 - A))
+    # sizes = [(100, 50), (200, 100), (400, 200)]
+    # exp = QRExperiment(dtypes=[np.float32, np.float64], sizes=sizes, block_size=32)
+    # sweep_res = exp.run_sweep()
+    # plot_qr_metrics_line(sweep_res, title="QR Decomposition Error vs Size")

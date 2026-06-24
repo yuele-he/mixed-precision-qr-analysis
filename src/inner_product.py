@@ -112,8 +112,8 @@ class InnerProductExperimentMixed(InnerProductExperiment):
         # 3. 计算内积：低精度乘，高精度加
         acc = 0.0  # float64 accumulator
         for i in range(size):
-            prod = float(a_low[i]) * float(b_low[i])  # 乘法先量化输入，再转float64
-            acc += prod  # 在高精度中累加
+            prod = a_low[i] * b_low[i]  # 乘法先量化输入，再转float64
+            acc += float(prod)  # 在高精度中累加
 
         approx = acc
 
@@ -158,7 +158,7 @@ class InnerProductExperimentFMA(InnerProductExperiment):
         b_low = b.astype(dtype)
 
         # 3. Compute inner product explicitly using FMA (accumulation in float64)
-        acc = 0.0  # float64 accumulator
+        acc = np.float64(0.0)  # float64 accumulator
         for i in range(size):
             # Ensure each operand is cast to Python float (double precision)
             # because math.fma expects scalars, not numpy dtypes.
