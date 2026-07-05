@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import html as html_lib
 import json
 import math
 import os
 import re
+from datetime import datetime
 from pathlib import Path
+from string import Template
 from typing import Iterable
 
 import matplotlib.pyplot as plt
@@ -1243,6 +1246,15 @@ def _run_scaled_error_plots_after_main():
     summary_dist, summary_n = build_summary_tables(error_df, results_dir)
     print(summary_dist.to_string(index=False))
 
+    generate_dashboard(
+        error_df=error_df,
+        results_dir=results_dir,
+        summary_dist=summary_dist,
+        summary_n=summary_n,
+        config=config if "config" in locals() else None,
+    )
+
+    print(summary_dist.to_string(index=False))
 
 def q25(x):
     return x.quantile(0.25)
@@ -1470,6 +1482,211 @@ def build_summary_tables(df, out_dir):
     return summary_dist, summary_n
 
 
+def _fmt_sci(x):
+    if x is None:
+        return "NA"
+    try:
+        x = float(x)
+        if not np.isfinite(x):
+            return "NA"
+        return f"{x:.2e}"
+    except Exception:
+        return "NA"
+
+
+def _fmt_num(x):
+    if x is None:
+        return "NA"
+    try:
+        x = float(x)
+        if not np.isfinite(x):
+            return "NA"
+        if abs(x) >= 1000:
+            return f"{x:,.0f}"
+        return f"{x:.3g}"
+    except Exception:
+        return "NA"
+
+
+def _median_positive(df, col):
+    if col not in df.columns:
+        return None
+    vals = pd.to_numeric(df[col], errors="coerce")
+    vals = vals[np.isfinite(vals)]
+    vals = vals[vals > 0]
+    if len(vals) == 0:
+        return None
+    return vals.median()
+
+
+def _median_all(df, col):
+    if col not in df.columns:
+        return None
+    vals = pd.to_numeric(df[col], errors="coerce")
+    vals = vals[np.isfinite(vals)]
+    if len(vals) == 0:
+        return None
+    return vals.median()
+
+
+def _html_table(df, max_rows=30):
+    if df is None or len(df) == 0:
+        return "<p>No summary table available.</p>"
+
+    shown = df.head(max_rows).copy()
+    return shown.to_html(
+        index=False,
+        escape=True,
+        classes="summary-table"
+    )
+
+
+def _collect_pngs(results_dir):
+    return sorted([
+        p for p in Path(results_dir).glob("*.png")
+        if p.is_file()
+    ])
+
+
+def _plot_card(path):
+    name = path.stem.replace("_", " ")
+    safe_name = html_lib.escape(name)
+    rel = html_lib.escape(path.name)
+
+    return f"""
+    <div class="plot-card">
+        <h4>{safe_name}</h4>
+        <a href="{rel}" target="_blank">
+            <img src="{rel}" alt="{safe_name}">
+        </a>
+    </div>
+    """
+
+
+def generate_dashboard(error_df, results_dir, summary_dist=None, summary_n=None, config=None):
+    results_dir = Path(results_dir)
+    dashboard_path = results_dir / "dashboard.html"
+
+    template_path = Path(__file__).resolve().parent / "dashboard_template.html"
+    template = Template(template_path.read_text(encoding="utf-8"))
+
+    input_distributions = sorted(
+        str(x) for x in error_df["input_distribution"].dropna().unique()
+    )
+
+    pngs = _collect_pngs(results_dir)
+
+    overview_rows = []
+    for dist in input_distributions:
+        sub = error_df[error_df["input_distribution"] == dist]
+
+        overview_rows.append({
+            "input_distribution": dist,
+            "rows": len(sub),
+            "n_values": sub["n"].nunique() if "n" in sub.columns else None,
+            "median_kappa_dot": _median_positive(sub, "kappa_dot"),
+            "median_mixed_error": _median_positive(sub, "mixed_error_vs_fp64"),
+            "median_scaled_mixed_error": _median_positive(sub, "scaled_mixed_error"),
+            "median_parallel_error": _median_positive(sub, "parallel_error_vs_serial_same_precision"),
+            "median_scaled_parallel_error": _median_positive(sub, "scaled_parallel_error"),
+        })
+
+    overview_df = pd.DataFrame(overview_rows)
+
+    overview_html_rows = []
+    for _, row in overview_df.iterrows():
+        overview_html_rows.append(f"""
+        <tr>
+            <td>{html_lib.escape(str(row["input_distribution"]))}</td>
+            <td>{_fmt_num(row["rows"])}</td>
+            <td>{_fmt_num(row["n_values"])}</td>
+            <td>{_fmt_sci(row["median_kappa_dot"])}</td>
+            <td>{_fmt_sci(row["median_mixed_error"])}</td>
+            <td>{_fmt_sci(row["median_scaled_mixed_error"])}</td>
+            <td>{_fmt_sci(row["median_parallel_error"])}</td>
+            <td>{_fmt_sci(row["median_scaled_parallel_error"])}</td>
+        </tr>
+        """)
+
+    if config:
+        config_html = f"""
+        <pre>{html_lib.escape(json.dumps(config, indent=2, ensure_ascii=False))}</pre>
+        """
+    else:
+        config_html = "<p>No config object passed to dashboard.</p>"
+
+    distribution_sections = []
+    for dist in input_distributions:
+        dist_key = dist.lower().replace(" ", "_")
+
+        dist_pngs = [
+            p for p in pngs
+            if dist_key in p.stem.lower()
+               or dist.lower() in p.stem.lower()
+        ]
+
+        priority = [
+            "condition",
+            "mixed",
+            "scaled",
+            "parallel",
+            "runtime",
+            "speedup",
+        ]
+
+        def sort_key(p):
+            stem = p.stem.lower()
+            for i, key in enumerate(priority):
+                if key in stem:
+                    return i
+            return 99
+
+        dist_pngs = sorted(dist_pngs, key=sort_key)
+
+        if not dist_pngs:
+            plots_html = "<p>No plots found for this distribution.</p>"
+        else:
+            plots_html = "\n".join(_plot_card(p) for p in dist_pngs)
+
+        distribution_sections.append(f"""
+        <details open>
+            <summary>{html_lib.escape(dist)}</summary>
+            <div class="plot-grid">
+                {plots_html}
+            </div>
+        </details>
+        """)
+
+    csv_links = []
+    for csv_name in [
+        "summary_by_distribution.csv",
+        "summary_by_n.csv",
+    ]:
+        csv_path = results_dir / csv_name
+        if csv_path.exists():
+            csv_links.append(
+                f'<li><a href="{csv_name}" target="_blank">{csv_name}</a></li>'
+            )
+
+    if csv_links:
+        csv_html = "<ul>" + "\n".join(csv_links) + "</ul>"
+    else:
+        csv_html = "<p>No summary CSV files found.</p>"
+
+    rendered_html = template.safe_substitute(
+        generated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        input_distribution_count=len(input_distributions),
+        row_count=f"{len(error_df):,}",
+        plot_count=len(pngs),
+        overview_rows="".join(overview_html_rows),
+        config_html=config_html,
+        csv_html=csv_html,
+        summary_dist_html=_html_table(summary_dist),
+        distribution_sections="".join(distribution_sections),
+    )
+
+    dashboard_path.write_text(rendered_html, encoding="utf-8")
+    print(f"[dashboard] saved to {dashboard_path}")
 _original_main_before_scaled = main
 
 
