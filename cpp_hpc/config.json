@@ -1,0 +1,67 @@
+{
+  "sizes": [
+    1000000,
+    1919384,
+    3684032,
+    7071068,
+    13572088,
+    26050038,
+    50000000
+  ],
+  "thread_counts": [
+    1,
+    2,
+    4,
+    8,
+    16,
+    22
+  ],
+  "runtime_trials": 1,
+  "runtime_repeats": 20,
+  "error_trials": 20,
+  "base_seed_x": 123,
+  "base_seed_y": 456,
+  "available_input_distributions": [
+    "normal",
+    "positive_uniform",
+    "alternating_sign",
+    "ill_scaled",
+    "nearly_canceling"
+  ],
+  "input_distributions": [
+    "normal"
+  ],
+  "plot_input_distributions": [
+    "normal"
+  ],
+  "runtime_summary_stat": "median",
+  "speedup_stat": "speedup_median",
+  "y_axis": {
+    "round_to_decades": true,
+    "pad_decades": 0.25,
+    "min_decades": 1.5,
+    "lower_percentile": 0,
+    "upper_percentile": 100
+  },
+  "results_dir": "cpp_hpc/results",
+  "files": {
+    "runtime_results": "dot_runtime_results.csv",
+    "error_results": "dot_error_results.csv",
+    "runtime_summary": "runtime_summary.csv",
+    "speedup_summary": "speedup_summary.csv",
+    "parallel_error_summary": "parallel_error_summary.csv",
+    "mixed_error_summary": "mixed_error_summary.csv",
+    "condition_number_summary": "condition_number_summary.csv"
+  },
+  "figures": {
+    "runtime_benchmark": "runtime_benchmark.png",
+    "speedup": "speedup_comparison.png",
+    "parallel_error_median": "parallel_error_median.png",
+    "parallel_error_distribution": "parallel_error_distribution_fixed_n.png",
+    "mixed_error_trend": "mixed_error_quantile_trend.png",
+    "mixed_error_distribution": "mixed_error_distribution_fixed_n.png",
+    "runtime_distribution": "runtime_distribution_fixed_n.png",
+    "condition_number_trend": "condition_number_quantile_trend.png",
+    "condition_number_distribution": "condition_number_distribution_fixed_n.png"
+  }
+}
