@@ -12,15 +12,50 @@ from typing import Callable, Iterable
 
 import numpy as np
 
+try:
+    from src.mixed_kernels import dot_low_product_high_accumulation
+except ImportError:
+    from mixed_kernels import dot_low_product_high_accumulation
+
 Array = np.ndarray
 
 
-def _as_floating_array(A: Array) -> Array:
-    """Return a floating-point copy of ``A`` while preserving its precision."""
+def _as_floating_array(A: Array, dtype=None) -> Array:
+    """Return a floating-point copy of ``A``.
+
+    If ``dtype`` is provided, the matrix is converted to that floating-point
+    dtype. Otherwise, the input precision is preserved when it is already a
+    floating-point array; non-floating inputs are converted to FP64.
+    """
+    if dtype is not None:
+        dtype = np.dtype(dtype)
+        if not np.issubdtype(dtype, np.floating):
+            raise TypeError(f"dtype must be floating point, got {dtype}.")
+        return np.asarray(A, dtype=dtype).copy()
+
     A = np.asarray(A)
     if not np.issubdtype(A.dtype, np.floating):
         A = A.astype(np.float64)
     return A.copy()
+
+
+def _as_dtype(dtype) -> np.dtype:
+    """Normalize and validate a floating-point dtype."""
+    dtype = np.dtype(dtype)
+    if not np.issubdtype(dtype, np.floating):
+        raise TypeError(f"Expected a floating-point dtype, got {dtype}.")
+    return dtype
+
+
+def _mixed_dot(a, b, *, operand_dtype, product_dtype, accumulator_dtype):
+    """Convenience wrapper around the main mixed dot-product kernel."""
+    return dot_low_product_high_accumulation(
+        a,
+        b,
+        operand_dtype=operand_dtype,
+        product_dtype=product_dtype,
+        accumulator_dtype=accumulator_dtype,
+    )
 
 
 def householder_vector(x: Array) -> tuple[Array, float]:
@@ -32,18 +67,6 @@ def householder_vector(x: Array) -> tuple[Array, float]:
 
     with ``v[0] = 1`` whenever the reflector is non-trivial. This follows the
     standard stable construction used in QR factorization.
-
-    Parameters
-    ----------
-    x:
-        One-dimensional vector to be reflected.
-
-    Returns
-    -------
-    v:
-        Column vector defining the Householder reflector.
-    beta:
-        Scalar coefficient of the reflector.
     """
     x = np.asarray(x).reshape(-1, 1)
     dtype = x.dtype
@@ -76,18 +99,7 @@ def householder_vector(x: Array) -> tuple[Array, float]:
 
 
 def householder_qr(A: Array) -> tuple[Array, Array]:
-    """Compute QR factorization using Householder reflections.
-
-    Parameters
-    ----------
-    A:
-        Matrix with shape ``(m, n)``.
-
-    Returns
-    -------
-    Q, R:
-        ``Q`` has shape ``(m, m)`` and ``R`` has shape ``(m, n)``.
-    """
+    """Compute QR factorization using Householder reflections."""
     A = _as_floating_array(A)
     dtype = A.dtype
     m, n = A.shape
@@ -106,16 +118,99 @@ def householder_qr(A: Array) -> tuple[Array, Array]:
     return Q, R
 
 
-def qr_wy(A: Array) -> tuple[Array, Array]:
-    """Compute QR factorization using a compact WY-style representation.
+def householder_qr_with_mixed_dot(
+    A: Array,
+    *,
+    operand_dtype=np.float32,
+    product_dtype=np.float32,
+    accumulator_dtype=np.float64,
+    storage_dtype=None,
+) -> tuple[Array, Array]:
+    """Householder QR using explicit configurable mixed-precision dot products.
 
-    This version accumulates Householder reflectors in the form
+    Main arithmetic model inside dot products:
 
-        Q = I - W Y.T.
+        low-precision operands + low-precision products + high-precision
+        accumulation.
 
-    The update exposes matrix-matrix operations and is therefore a useful
-    stepping stone toward block QR algorithms.
+    Defaults:
+        FP32 operands + FP32 products + FP64 accumulation.
+
+    Parameters
+    ----------
+    A:
+        Input matrix.
+    operand_dtype:
+        Precision used to round operands in each mixed dot product.
+    product_dtype:
+        Precision used to round each product before accumulation.
+    accumulator_dtype:
+        Precision used for accumulation and the main working arithmetic.
+    storage_dtype:
+        Optional precision used to store ``A`` and ``Q`` between Householder
+        steps. If ``None``, values are stored in ``accumulator_dtype``. Setting
+        ``storage_dtype=np.float32`` simulates a storage-limited model.
+
+    Notes
+    -----
+    This is a research/teaching implementation. It replaces the BLAS-like
+    operations ``v.T @ A`` and ``Q @ v`` with explicit mixed dot products so the
+    rounding model is visible and configurable. It is not intended to be fast.
     """
+    operand_dtype = _as_dtype(operand_dtype)
+    product_dtype = _as_dtype(product_dtype)
+    accumulator_dtype = _as_dtype(accumulator_dtype)
+    storage_dtype = accumulator_dtype if storage_dtype is None else _as_dtype(storage_dtype)
+
+    A_work = np.asarray(A, dtype=storage_dtype).astype(accumulator_dtype, copy=True)
+    m, n = A_work.shape
+    Q = np.eye(m, dtype=accumulator_dtype)
+
+    for k in range(min(m, n)):
+        # Reflector generation is kept in accumulator precision so that the
+        # experiment isolates the dot-product rounding inside reflector updates.
+        x = A_work[k:, k].astype(accumulator_dtype, copy=True)
+        v, beta = householder_vector(x)
+        v = v.reshape(-1).astype(accumulator_dtype, copy=False)
+
+        if beta == 0.0:
+            continue
+
+        beta_acc = accumulator_dtype.type(beta)
+
+        # A[k:, k:] = A[k:, k:] - beta * v * (v.T @ A[k:, k:])
+        for j in range(k, n):
+            tau = _mixed_dot(
+                v,
+                A_work[k:, j],
+                operand_dtype=operand_dtype,
+                product_dtype=product_dtype,
+                accumulator_dtype=accumulator_dtype,
+            )
+            A_work[k:, j] = A_work[k:, j] - beta_acc * v * tau
+
+        # Q[:, k:] = Q[:, k:] - (Q[:, k:] @ v) * beta * v.T
+        for i in range(m):
+            tau = _mixed_dot(
+                Q[i, k:],
+                v,
+                operand_dtype=operand_dtype,
+                product_dtype=product_dtype,
+                accumulator_dtype=accumulator_dtype,
+            )
+            Q[i, k:] = Q[i, k:] - beta_acc * tau * v
+
+        # Optional storage rounding after each step.
+        if storage_dtype != accumulator_dtype:
+            A_work = A_work.astype(storage_dtype).astype(accumulator_dtype)
+            Q = Q.astype(storage_dtype).astype(accumulator_dtype)
+
+    R = np.triu(A_work[:m, :n])
+    return Q.astype(accumulator_dtype, copy=False), R.astype(accumulator_dtype, copy=False)
+
+
+def qr_wy(A: Array) -> tuple[Array, Array]:
+    """Compute QR factorization using a compact WY-style representation."""
     A = _as_floating_array(A)
     dtype = A.dtype
     m, n = A.shape
@@ -152,12 +247,7 @@ def qr_wy(A: Array) -> tuple[Array, Array]:
 
 
 def block_qr(A: Array, block_size: int = 64) -> tuple[Array, Array]:
-    """Compute a simple block QR factorization.
-
-    The implementation applies QR factorization to panels of columns and updates
-    the remaining trailing matrix. It is written for numerical experiments, not
-    as a high-performance production implementation.
-    """
+    """Compute a simple block QR factorization."""
     if block_size <= 0:
         raise ValueError("block_size must be positive.")
 
@@ -183,35 +273,17 @@ def block_qr(A: Array, block_size: int = 64) -> tuple[Array, Array]:
     return Q_total, R
 
 
-
 def householder_qr_mixed_fma(
     A: Array,
     *,
     operand_dtype: type = np.float32,
     accumulator_dtype: type = np.float64,
 ) -> tuple[Array, Array]:
-    """Simulated mixed-FMA Householder QR with high-precision accumulation.
+    """Legacy compatibility wrapper for a rounded-input QR experiment.
 
-    This is the default mixed-precision model used for the dissertation-style
-    experiments:
-
-        low-precision operands + high-precision accumulation/storage.
-
-    Software model
-    --------------
-    - The input matrix is first rounded to ``operand_dtype``; by default FP32.
-    - The rounded operands are promoted to ``accumulator_dtype``; by default
-      FP64.
-    - The Householder QR computation is then carried out in the accumulator
-      precision, and the returned Q and R factors are kept in that precision.
-
-    This mirrors the mixed-FMA idea ``C = C + A * B`` where A and B are lower
-    precision operands but C is a higher-precision accumulator. In NumPy this is
-    a software-level simulation, not a hardware-level FMA instruction.
-
-    Compared with ``householder_qr_mixed_fma_store32``, this version does not
-    round the working matrix back to FP32 after each Householder update. It is
-    therefore expected to be much closer to float64 QR than to pure float32 QR.
+    Despite the historical name, this is not an explicit FMA QR kernel. It
+    rounds the input matrix to ``operand_dtype``, promotes it to
+    ``accumulator_dtype``, and then calls ordinary Householder QR.
     """
     A_operands = np.asarray(A, dtype=operand_dtype)
     A_acc = A_operands.astype(accumulator_dtype)
@@ -225,21 +297,11 @@ def householder_qr_mixed_fma_store32(
     storage_dtype: type = np.float32,
     accumulator_dtype: type = np.float64,
 ) -> tuple[Array, Array]:
-    """Conservative simulated mixed-FMA Householder QR with FP32 storage.
+    """Legacy compatibility wrapper for a storage-limited QR experiment.
 
-    Software model
-    --------------
-    - ``A`` and ``Q`` are stored in ``storage_dtype``; by default FP32.
-    - At each Householder step, the active vector and matrix blocks are
-      converted to ``accumulator_dtype``; by default FP64.
-    - The reflector application, including inner products and matrix updates,
-      is computed in accumulator precision.
-    - The updated blocks are rounded back to ``storage_dtype`` before the next
-      step.
-
-    This is useful for studying a storage-limited mixed-precision model. It is
-    usually less accurate than ``householder_qr_mixed_fma`` because every step
-    is limited by FP32 storage rounding.
+    Despite the historical name, this is not an explicit FMA QR kernel. It stores
+    the working arrays in ``storage_dtype`` between steps and computes local
+    Householder updates in ``accumulator_dtype``.
     """
     A_work = np.asarray(A, dtype=storage_dtype).copy()
     m, n = A_work.shape
@@ -279,11 +341,15 @@ class QRExperiment:
             "Householder": householder_qr,
             "WY": qr_wy,
             "Block QR": lambda A: block_qr(A, block_size=self.block_size),
+            "Mixed-dot Householder": householder_qr_with_mixed_dot,
         }
 
     def run_single(self, m: int = 200, n: int = 100, dtype=np.float64) -> dict[str, dict[str, float]]:
         """Run one random QR experiment and return basic error metrics."""
-        from error_analysis import compute_qr_errors
+        try:
+            from src.error_analysis import compute_qr_errors
+        except ImportError:
+            from error_analysis import compute_qr_errors
 
         rng = np.random.default_rng(42)
         A = rng.standard_normal((m, n)).astype(dtype)
@@ -296,7 +362,10 @@ class QRExperiment:
 
     def run_sweep(self) -> dict[str, dict[str, dict[str, list[float]]]]:
         """Run a lightweight sweep over ``self.sizes`` and ``self.dtypes``."""
-        from error_analysis import compute_qr_errors
+        try:
+            from src.error_analysis import compute_qr_errors
+        except ImportError:
+            from error_analysis import compute_qr_errors
 
         rng = np.random.default_rng(42)
         output: dict[str, dict[str, dict[str, list[float]]]] = {}
