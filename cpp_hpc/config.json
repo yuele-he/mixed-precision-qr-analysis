@@ -43,7 +43,7 @@
     "lower_percentile": 0,
     "upper_percentile": 100
   },
-  "results_dir": "cpp_hpc/results",
+  "results_dir": "cpp_hpc/results/dot",
   "files": {
     "runtime_results": "dot_runtime_results.csv",
     "error_results": "dot_error_results.csv",

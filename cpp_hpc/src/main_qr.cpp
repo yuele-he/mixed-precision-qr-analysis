@@ -1,50 +1,14 @@
+#include "matrix_utils.hpp"
 #include "qr.hpp"
 
-#include <cmath>
 #include <iomanip>
 #include <iostream>
-#include <random>
 #include <string>
 #include <vector>
 
-std::vector<double> make_random_matrix(std::size_t m,
-                                       std::size_t n,
-                                       unsigned int seed)
+namespace
 {
-    std::mt19937 gen(seed);
-    std::normal_distribution<double> dist(0.0, 1.0);
-
-    std::vector<double> A(m * n, 0.0);
-
-    // Column-major.
-    for (std::size_t j = 0; j < n; ++j)
-    {
-        for (std::size_t i = 0; i < m; ++i)
-        {
-            A[cm_idx(i, j, m)] = dist(gen);
-        }
-    }
-
-    return A;
-}
-
-std::vector<double> make_identity_like_matrix(std::size_t m,
-                                              std::size_t n)
-{
-    std::vector<double> A(m * n, 0.0);
-
-    for (std::size_t j = 0; j < n; ++j)
-    {
-        for (std::size_t i = 0; i < m; ++i)
-        {
-            A[cm_idx(i, j, m)] = (i == j) ? 1.0 : 0.0;
-        }
-    }
-
-    return A;
-}
-
-void run_case(const std::string& name,
+    void run_case(const std::string& name,
               const std::vector<double>& A,
               std::size_t m,
               std::size_t n)
@@ -65,6 +29,8 @@ void run_case(const std::string& name,
     std::cout << "status: " << (pass ? "PASS" : "CHECK") << "\n";
     std::cout << "----------------------------------------\n";
 }
+
+} // namespace
 
 int main()
 {
@@ -98,6 +64,13 @@ int main()
         const std::size_t n = 4;
         auto A = make_identity_like_matrix(m, n);
         run_case("identity_like_6x4", A, m, n);
+    }
+
+    {
+        const std::size_t m = 8;
+        const std::size_t n = 4;
+        auto A = make_nearly_dependent_matrix(m, n, 4, 1e-8);
+        run_case("nearly_dependent_8x4", A, m, n);
     }
 
     return 0;

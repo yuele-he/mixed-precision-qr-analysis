@@ -14,17 +14,15 @@ fi
 echo "Project root: $PROJECT_ROOT"
 echo "Config: $CONFIG_PATH"
 
-echo "Compiling C++ OpenMP benchmark..."
-g++ -O3 -std=c++17 -fopenmp \
-  cpp_hpc/src/main.cpp cpp_hpc/src/dot.cpp cpp_hpc/src/config.cpp \
-  -Icpp_hpc/include \
-  -o cpp_hpc/dot_openmp
+echo "Configuring and building C++ targets..."
+cmake -S cpp_hpc -B cpp_hpc/build
+cmake --build cpp_hpc/build -j
 
 echo "Setting OpenMP environment..."
 export OMP_PROC_BIND=true
 export OMP_PLACES=cores
 
-echo "Cleaning old generated figures and summary CSVs..."
+echo "Cleaning old generated dot-product figures and summary CSVs..."
 rm -f cpp_hpc/results/*.png
 rm -f cpp_hpc/results/runtime_summary.csv \
       cpp_hpc/results/speedup_summary.csv \
@@ -33,7 +31,7 @@ rm -f cpp_hpc/results/runtime_summary.csv \
       cpp_hpc/results/condition_number_summary.csv
 
 echo "Running runtime benchmark and error analysis..."
-./cpp_hpc/dot_openmp "$CONFIG_PATH"
+./cpp_hpc/build/dot_openmp "$CONFIG_PATH"
 
 echo "Plotting and generating summary CSVs..."
 CPP_HPC_CONFIG="$CONFIG_PATH" python3 cpp_hpc/scripts/plot_dot_results.py

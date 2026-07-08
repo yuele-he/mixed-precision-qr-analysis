@@ -4,60 +4,65 @@ project(ParallelMixedPrecisionDot LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(OpenMP REQUIRED)
 
+function(configure_common_warnings target_name)
+    if (MSVC)
+        target_compile_options(${target_name} PRIVATE /W4 /O2)
+    else ()
+        target_compile_options(${target_name} PRIVATE -Wall -Wextra -Wpedantic -O3 -march=native)
+    endif ()
+endfunction()
+
 # -----------------------------
-# Dot-product benchmark
+# Dot-product kernels
 # -----------------------------
-add_executable(dot_openmp
-        src/main.cpp
+add_library(dot_kernels
         src/dot.cpp
         src/config.cpp
 )
 
-target_include_directories(dot_openmp PRIVATE
+target_include_directories(dot_kernels PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-target_link_libraries(dot_openmp PRIVATE OpenMP::OpenMP_CXX)
+target_link_libraries(dot_kernels PUBLIC OpenMP::OpenMP_CXX)
+configure_common_warnings(dot_kernels)
+
+add_executable(dot_openmp
+        src/main.cpp
+)
+
+target_link_libraries(dot_openmp PRIVATE dot_kernels)
+configure_common_warnings(dot_openmp)
 
 # -----------------------------
-# Serial Householder QR correctness test
+# Householder QR kernels
 # -----------------------------
+add_library(qr_kernels
+        src/qr_serial.cpp
+        src/qr_metrics.cpp
+        src/matrix_utils.cpp
+)
+
+target_include_directories(qr_kernels PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+configure_common_warnings(qr_kernels)
+
 add_executable(qr_householder
         src/main_qr.cpp
-        src/qr_serial.cpp
-        src/qr_metrics.cpp
 )
 
-target_include_directories(qr_householder PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
+target_link_libraries(qr_householder PRIVATE qr_kernels)
+configure_common_warnings(qr_householder)
 
-target_link_libraries(qr_householder PRIVATE OpenMP::OpenMP_CXX)
-
-# -----------------------------
-# Serial Householder QR benchmark
-# -----------------------------
 add_executable(qr_benchmark
         src/main_qr_benchmark.cpp
-        src/qr_serial.cpp
-        src/qr_metrics.cpp
 )
 
-target_include_directories(qr_benchmark PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
-
-target_link_libraries(qr_benchmark PRIVATE OpenMP::OpenMP_CXX)
-
-if (MSVC)
-    target_compile_options(dot_openmp PRIVATE /O2)
-    target_compile_options(qr_householder PRIVATE /O2)
-    target_compile_options(qr_benchmark PRIVATE /O2)
-else ()
-    target_compile_options(dot_openmp PRIVATE -O3 -march=native)
-    target_compile_options(qr_householder PRIVATE -O3 -march=native)
-    target_compile_options(qr_benchmark PRIVATE -O3 -march=native)
-endif ()
+target_link_libraries(qr_benchmark PRIVATE qr_kernels)
+configure_common_warnings(qr_benchmark)
